@@ -356,3 +356,199 @@ function saveConfig() {
   });
   savePrices();
   const ok = document.getElementById("config-ok");
+  if(ok){ ok.style.display="block"; setTimeout(()=>ok.style.display="none",3000); }
+}
+
+function delDay(d) { delete data[d]; saveData(); render(); }
+
+function openModal() {
+  step=1; hojaFiles=[]; excelFile=null; noEntFiles=[]; reviewData=null;
+  document.getElementById("overlay").classList.remove("hidden");
+  renderStep();
+}
+function closeModal() { document.getElementById("overlay").classList.add("hidden"); }
+function todayStr() { return today.toISOString().split("T")[0]; }
+
+function renderStep() {
+  const title=document.getElementById("modal-title");
+  const sub=document.getElementById("modal-sub");
+  const body=document.getElementById("modal-body");
+  const closeBtn=document.getElementById("btn-close");
+
+  if(step===1){
+    title.textContent="Cargar archivos"; sub.textContent="Hoja de ruta + Excel + No entregados"; closeBtn.style.display="flex";
+    body.innerHTML=`
+      <div class="filtro-group"><span class="filtro-label">Fecha del día</span><input type="date" class="date-input" id="inp-fecha" value="${todayStr()}"></div>
+      ${fileZoneHTML("📄 Hoja de ruta","PDF o fotos — podés seleccionar múltiples",true,true,"image/*,application/pdf","hoja")}
+      ${fileZoneHTML("📊 Excel de gestión","Archivo .xlsx con columnas Envío y Tipo de Servicio",true,false,".xlsx,.xls","excel")}
+      ${fileZoneHTML("❌ No entregados","Foto o captura — opcional",false,true,"image/*,application/pdf","noent")}
+      <div class="error-box hidden" id="error-box"></div>
+      <button class="big-btn big-btn-red" onclick="processFiles()">⚡ Procesar archivos</button>
+      <button class="big-btn big-btn-outline" style="border:1px solid #ccc" onclick="goManual()">✏️ Carga manual</button>`;
+    updateFileLabels();
+  } else if(step===2){
+    title.textContent="Procesando..."; sub.textContent=""; closeBtn.style.display="none";
+    body.innerHTML=`<div class="loading-wrap"><div class="spinner"></div><div class="loading-msg" id="proc-msg">Iniciando...</div><div class="loading-sub">Esto puede tomar unos segundos...</div></div>`;
+  } else if(step===3&&reviewData){
+    title.textContent="Revisar resultado"; sub.textContent=""; closeBtn.style.display="flex";
+    const cats=Object.entries(reviewData.cats).sort((a,b)=>b[1].cant-a[1].cant);
+    const total=cats.reduce((a,[,v])=>a+v.monto,0);
+    const catsHTML=cats.map(([cat,v])=>`<div class="review-row"><span class="review-cat">${cat}</span><span class="review-cant">${v.cant}</span><span class="review-monto">${fmt(v.monto)}</span></div>`).join("");
+    const warnHTML=reviewData.sinMatch.length>0?`<div class="warning-box"><div class="warning-title">⚠️ ${reviewData.sinMatch.length} sin categoría</div><div class="warning-sub">Se excluyen del total.</div></div>`:"";
+    body.innerHTML=`
+      <div class="stats-row">
+        <div class="stat-item"><div class="stat-num" style="color:#000">${reviewData.todosCount}</div><div class="stat-label">hoja de ruta</div></div>
+        <div class="stat-item"><div class="stat-num" style="color:#cc0000">${reviewData.noEntCount}</div><div class="stat-label">no entregados</div></div>
+        <div class="stat-item"><div class="stat-num" style="color:#006600">${reviewData.entCount}</div><div class="stat-label">facturables</div></div>
+      </div>
+      <div class="divider"></div>
+      ${catsHTML}
+      <div class="review-total"><span style="color:#000">TOTAL</span><span style="color:#cc0000">${fmt(total)}</span></div>
+      ${warnHTML}
+      <button class="big-btn big-btn-red" onclick="confirmSave()">💾 Guardar</button>
+      <button class="big-btn big-btn-outline" style="border:1px solid #ccc" onclick="goBack()">← Volver</button>`;
+  } else if(step===4){
+    title.textContent="Carga manual"; sub.textContent=""; closeBtn.style.display="flex";
+    const rows=Object.keys(PRECIOS_DEFAULT).map(cat=>`
+      <div class="manual-row">
+        <span class="manual-cat">${cat}</span>
+        <input type="number" min="0" class="manual-input" id="m_${cat.replace(/\s/g,'_').replace(/\//g,'_')}" placeholder="0">
+      </div>`).join("");
+    body.innerHTML=`
+      <div class="filtro-group"><span class="filtro-label">Fecha</span><input type="date" class="date-input" id="inp-fecha-m" value="${todayStr()}"></div>
+      <span class="filtro-label">Cantidades por categoría</span>
+      ${rows}
+      <button class="big-btn big-btn-red" onclick="manualSave()" style="margin-top:8px">💾 Guardar</button>
+      <button class="big-btn big-btn-outline" style="border:1px solid #ccc" onclick="goBack()">← Volver</button>`;
+  }
+}
+
+function fileZoneHTML(label,hint,required,multiple,accept,id){
+  const badge=required?'<span class="badge badge-req">REQUERIDO</span>':'<span class="badge badge-opt">OPCIONAL</span>';
+  return `<div class="file-zone">
+    <div class="file-zone-header"><span class="file-zone-title">${label}</span>${badge}</div>
+    <div class="file-zone-hint">${hint}</div>
+    <div class="file-btn-wrap">
+      <div class="file-btn-visual">📁 Seleccionar ${multiple?"archivos":"archivo"}</div>
+      <input type="file" class="file-input" ${multiple?"multiple":""} accept="${accept}" onchange="handleFile(event,'${id}')">
+    </div>
+    <div id="files-${id}"></div>
+  </div>`;
+}
+
+function handleFile(e,id){
+  const files=Array.from(e.target.files);
+  if(id==="hoja") hojaFiles=files;
+  else if(id==="excel") excelFile=files[0]||null;
+  else if(id==="noent") noEntFiles=files;
+  updateFileLabels();
+}
+
+function updateFileLabels(){
+  const show=(id,files)=>{ const el=document.getElementById("files-"+id); if(!el) return; el.innerHTML=files.map(f=>`<div class="file-ok">✓ ${f.name}</div>`).join(""); };
+  show("hoja",hojaFiles); show("excel",excelFile?[excelFile]:[]); show("noent",noEntFiles);
+}
+
+function showError(msg){ const el=document.getElementById("error-box"); if(el){el.textContent=msg;el.classList.remove("hidden");} }
+function goManual(){ step=4; renderStep(); }
+function goBack(){ step=1; renderStep(); }
+
+async function processFiles(){
+  if(!hojaFiles.length) return showError("Seleccioná al menos una hoja de ruta.");
+  if(!excelFile) return showError("Seleccioná el Excel de gestión.");
+  step=2; renderStep();
+  try {
+    setProcMsg("Leyendo hoja de ruta...");
+    const todos=await extractNumbers(hojaFiles);
+    let noEnt=new Set();
+    if(noEntFiles.length){setProcMsg("Leyendo no entregados...");noEnt=new Set(await extractNumbers(noEntFiles));}
+    setProcMsg("Procesando Excel...");
+    const exMap=await parseExcel(excelFile);
+    setProcMsg("Calculando...");
+    const fecha=document.getElementById("inp-fecha")?document.getElementById("inp-fecha").value:todayStr();
+    const entregados=todos.filter(n=>!noEnt.has(n));
+    const cats={}; const sinMatch=[];
+    entregados.forEach(num=>{
+      let cat=exMap[num];
+      if(cat){
+        const norm=normCat(cat);
+        const precio=getPrice(norm);
+        if(!cats[norm]) cats[norm]={cant:0,monto:0};
+        cats[norm].cant++; cats[norm].monto+=precio;
+      } else if(num.startsWith("G")){
+        if(!cats["Tarjeta Financiera"]) cats["Tarjeta Financiera"]={cant:0,monto:0};
+        cats["Tarjeta Financiera"].cant++; cats["Tarjeta Financiera"].monto+=getPrice("Tarjeta Financiera");
+      } else if(num.startsWith("E")){
+        if(!cats["Documento Andreani"]) cats["Documento Andreani"]={cant:0,monto:0};
+        cats["Documento Andreani"].cant++; cats["Documento Andreani"].monto+=getPrice("Documento Andreani");
+      } else sinMatch.push(num);
+    });
+    reviewData={fecha,todosCount:todos.length,noEntCount:noEnt.size,entCount:entregados.length,cats,sinMatch};
+    step=3; renderStep();
+  } catch(err){ step=1; renderStep(); setTimeout(()=>showError("Error: "+err.message),100); }
+}
+
+function setProcMsg(msg){ const el=document.getElementById("proc-msg"); if(el) el.textContent=msg; }
+
+function confirmSave(){
+  if(!reviewData) return;
+  data[reviewData.fecha]=reviewData.cats;
+  saveData(); closeModal();
+  const dt=new Date(reviewData.fecha+"T00:00:00");
+  document.getElementById("sel-mes").value=dt.getMonth();
+  document.getElementById("sel-anio").value=dt.getFullYear();
+  render();
+}
+
+function manualSave(){
+  const fecha=document.getElementById("inp-fecha-m").value;
+  const cats={};
+  Object.keys(PRECIOS_DEFAULT).forEach(cat=>{
+    const id="m_"+cat.replace(/\s/g,'_').replace(/\//g,'_');
+    const el=document.getElementById(id);
+    const cant=parseInt(el?.value)||0;
+    if(cant>0){
+      const norm=normCat(cat);
+      const precio=getPrice(norm);
+      if(!cats[norm]) cats[norm]={cant:0,monto:0};
+      cats[norm].cant+=cant; cats[norm].monto+=cant*precio;
+    }
+  });
+  data[fecha]=cats;
+  saveData(); closeModal();
+  const dt=new Date(fecha+"T00:00:00");
+  document.getElementById("sel-mes").value=dt.getMonth();
+  document.getElementById("sel-anio").value=dt.getFullYear();
+  render();
+}
+
+function fileToBase64(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=rej; r.readAsDataURL(file); }); }
+function fileToBuffer(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsArrayBuffer(file); }); }
+
+async function extractNumbers(files){
+  const content=[];
+  for(const file of files){ const b64=await fileToBase64(file); content.push(file.type.startsWith("image/")?{type:"image",source:{type:"base64",media_type:file.type,data:b64}}:{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}); }
+  content.push({type:"text",text:"Extract all Andreani tracking numbers. They start with digits, G, E or U and are ~15-16 chars long. Return ONLY a valid JSON array of strings, no markdown."});
+  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:2000,messages:[{role:"user",content}]})});
+  const d=await res.json();
+  return JSON.parse(d.content[0].text.trim().replace(/```json|```/g,"").trim());
+}
+
+async function parseExcel(file){
+  const buf=await fileToBuffer(file);
+  const wb=XLSX.read(buf,{type:"array"});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1});
+  const header=rows[0].map(h=>String(h||"").toLowerCase());
+  const eIdx=header.findIndex(h=>h==="envío"||h==="envio"||(h.includes("nv")&&!h.includes("tipo")));
+  const sIdx=header.findIndex(h=>h.includes("tipo de servicio"));
+  if(eIdx===-1||sIdx===-1) throw new Error("No encontré columnas Envío y Tipo de Servicio.");
+  const map={};
+  for(let i=1;i<rows.length;i++){ const e=String(rows[i][eIdx]||"").trim(); const sv=String(rows[i][sIdx]||"").trim(); if(e&&sv) map[e]=sv; }
+  return map;
+}
+
+loadAll(); initSelects(); render();
+</script>
+</body>
+</html>
